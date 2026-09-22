@@ -1,0 +1,41 @@
+--- base/proceso_a.c
++++ v5_confirmacion_por_cola/proceso_a.c
+@@ -12,6 +12,7 @@
+ 
+ #define CLAVE_COLA 2026
+ #define TIPO_MSG   1
++#define TIPO_ACK   2           /* CAMBIO V5: respuestas de B a A */
+ #define MAXTEXT    256
+ 
+ #define SALTO_COLA 1
+@@ -75,6 +76,16 @@
+     }
+     printf("[A %d] enviado por COLA: \"%s\"\n", (int) getpid(), m.mtext);
+     fflush(stdout);
++
++    /* CAMBIO V5: esperar la confirmacion de B. Solo tipo TIPO_ACK:
++     * asi A nunca se lleva un mensaje que era para B. */
++    if (msgrcv(msqid, &m, MAXTEXT, TIPO_ACK, 0) < 0)
++    {
++        perror("msgrcv ack");
++        return;
++    }
++    printf("[A %d] confirmacion recibida: \"%s\"\n", (int) getpid(), m.mtext);
++    fflush(stdout);
+ }
+ 
+ static void enviar_por_pipe(void)
+@@ -151,6 +162,13 @@
+         }
+         printf("[B %d] recibido por COLA: \"%s\"\n", (int) getpid(), m.mtext);
+         fflush(stdout);
++
++        /* CAMBIO V5: responder por la MISMA cola con OTRO tipo.
++         * B lee solo TIPO_MSG, asi nunca se lee su propia respuesta. */
++        m.mtype = TIPO_ACK;
++        snprintf(m.mtext, MAXTEXT, "ACK de B (PID %d)", (int) getpid());
++        if (msgsnd(msqid, &m, strlen(m.mtext) + 1, 0) < 0)
++            perror("msgsnd ack");
+     }
+ 
+     waitpid(pid_clon, NULL, 0);

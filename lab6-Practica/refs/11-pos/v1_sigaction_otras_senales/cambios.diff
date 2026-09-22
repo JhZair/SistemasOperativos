@@ -1,0 +1,92 @@
+--- base/proceso_a.c
++++ v1_sigaction_otras_senales/proceso_a.c
+@@ -39,18 +39,39 @@
+     exit(1);
+ }
+ 
+-static void manejador_int(int signo)
++/* CAMBIO V1: manejadores de 3 argumentos (SA_SIGINFO) para saber
++ * que proceso envio la senal (info->si_pid) */
++static volatile sig_atomic_t pid_emisor = 0;
++
++static void manejador_usr1(int signo, siginfo_t *info, void *ctx)
+ {
++    (void) ctx;
+     ultima_senal = signo;
++    pid_emisor = info->si_pid;
+     siglongjmp(punto_salto, SALTO_COLA);
+ }
+ 
+-static void manejador_trap(int signo)
++static void manejador_usr2(int signo, siginfo_t *info, void *ctx)
+ {
++    (void) ctx;
+     ultima_senal = signo;
++    pid_emisor = info->si_pid;
+     siglongjmp(punto_salto, SALTO_PIPE);
+ }
+ 
++/* CAMBIO V1: registrar con sigaction en vez de signal */
++static void registrar(int senal, void (*h)(int, siginfo_t *, void *))
++{
++    struct sigaction sa;
++
++    memset(&sa, 0, sizeof(sa));
++    sa.sa_sigaction = h;
++    sa.sa_flags = SA_SIGINFO;
++    sigemptyset(&sa.sa_mask);
++    if (sigaction(senal, &sa, NULL) < 0)
++        die("sigaction");
++}
++
+ static void manejador_term(int signo)
+ {
+     ultima_senal = signo;
+@@ -73,7 +94,8 @@
+         perror("msgsnd");
+         return;
+     }
+-    printf("[A %d] enviado por COLA: \"%s\"\n", (int) getpid(), m.mtext);
++    printf("[A %d] senal %d del PID %d -> enviado por COLA: \"%s\"\n",
++           (int) getpid(), (int) ultima_senal, (int) pid_emisor, m.mtext);
+     fflush(stdout);
+ }
+ 
+@@ -90,7 +112,8 @@
+         perror("write");
+         return;
+     }
+-    printf("[A %d] enviado por PIPE: \"%s\"\n", (int) getpid(), buf);
++    printf("[A %d] senal %d del PID %d -> enviado por PIPE: \"%s\"\n",
++           (int) getpid(), (int) ultima_senal, (int) pid_emisor, buf);
+     fflush(stdout);
+ }
+ 
+@@ -123,8 +146,8 @@
+     struct mensaje m;
+     ssize_t n;
+ 
+-    signal(SIGINT,  SIG_IGN);
+-    signal(SIGTRAP, SIG_IGN);
++    signal(SIGUSR1, SIG_IGN);   /* CAMBIO V1: ignorar las senales nuevas */
++    signal(SIGUSR2, SIG_IGN);
+ 
+     pid_clon = fork();
+     if (pid_clon < 0)
+@@ -185,13 +208,13 @@
+     else if (origen == SALTO_FIN)
+         terminar();
+ 
+-    signal(SIGINT,  manejador_int);
+-    signal(SIGTRAP, manejador_trap);
++    registrar(SIGUSR1, manejador_usr1);     /* CAMBIO V1: senal 10 */
++    registrar(SIGUSR2, manejador_usr2);     /* CAMBIO V1: senal 12 */
+     signal(SIGTERM, manejador_term);
+ 
+     if (origen == 0)
+     {
+-        printf("[A %d] listo. kill -2 / -5 / -15 %d\n",
++        printf("[A %d] listo. kill -10 / -12 / -15 %d\n",
+                (int) getpid(), (int) getpid());
+         fflush(stdout);
+     }

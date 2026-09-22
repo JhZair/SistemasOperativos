@@ -1,0 +1,45 @@
+--- base/proceso_a.c
++++ v3_dup2_stdin/proceso_a.c
+@@ -105,12 +105,15 @@
+ 
+ static void clon_de_b(void)
+ {
+-    char texto_fd[16];
+-
+     close(fd[1]);
+-    snprintf(texto_fd, sizeof(texto_fd), "%d", fd[0]);
+ 
+-    char *args[] = { "./proceso_c", texto_fd, NULL };
++    /* CAMBIO V3: el extremo de lectura pasa a ser la entrada estandar */
++    if (dup2(fd[0], STDIN_FILENO) < 0)
++        die("dup2");
++    close(fd[0]);           /* ya no hace falta: el 0 apunta al pipe */
++
++    /* CAMBIO V3: no se pasa ningun descriptor por argv */
++    char *args[] = { "./proceso_c", NULL };
+ 
+     fflush(stdout);
+     execv("./proceso_c", args);
+--- base/proceso_c.c
++++ v3_dup2_stdin/proceso_c.c
+@@ -12,14 +12,13 @@
+     char buf[MAXBUF];
+     ssize_t n;
+ 
+-    if (argc != 2)
+-    {
+-        fprintf(stderr, "uso: %s <fd>\n", argv[0]);
+-        return 1;
+-    }
++    (void) argc;
++    (void) argv;
+ 
+-    fd = atoi(argv[1]);
+-    printf("[C %d] escuchando el PIPE por el fd %d\n", (int) getpid(), fd);
++    /* CAMBIO V3: C no sabe que existe un pipe: lee de stdin */
++    fd = STDIN_FILENO;
++    printf("[C %d] escuchando stdin (fd %d), redirigido al PIPE\n",
++           (int) getpid(), fd);
+     fflush(stdout);
+ 
+     while (1)

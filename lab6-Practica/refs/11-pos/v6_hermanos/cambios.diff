@@ -1,0 +1,75 @@
+--- base/proceso_a.c
++++ v6_hermanos/proceso_a.c
+@@ -30,6 +30,7 @@
+ static int   fd[2];
+ static int   msqid = -1;
+ static pid_t pid_b = -1;
++static pid_t pid_c = -1;           /* CAMBIO V6 */
+ static int   contador_cola = 0;
+ static int   contador_pipe = 0;
+ 
+@@ -99,14 +100,20 @@
+     close(fd[1]);
+     msgctl(msqid, IPC_RMID, NULL);
+     waitpid(pid_b, NULL, 0);
++    waitpid(pid_c, NULL, 0);    /* CAMBIO V6: A es padre de los dos */
+     printf("[A %d] fin\n", (int) getpid());
+     exit(0);
+ }
+ 
+-static void clon_de_b(void)
++/* CAMBIO V6: ya no es "clon de B" sino segundo hijo de A */
++static void hijo_c(void)
+ {
+     char texto_fd[16];
+ 
++    /* CAMBIO V6: C ya no hereda el SIG_IGN de B: ponerlo aqui */
++    signal(SIGINT,  SIG_IGN);
++    signal(SIGTRAP, SIG_IGN);
++
+     close(fd[1]);
+     snprintf(texto_fd, sizeof(texto_fd), "%d", fd[0]);
+ 
+@@ -119,18 +126,13 @@
+ 
+ static void proceso_b(void)
+ {
+-    pid_t pid_clon;
+     struct mensaje m;
+     ssize_t n;
+ 
+     signal(SIGINT,  SIG_IGN);
+     signal(SIGTRAP, SIG_IGN);
+ 
+-    pid_clon = fork();
+-    if (pid_clon < 0)
+-        die("fork clon");
+-    if (pid_clon == 0)
+-        clon_de_b();
++    /* CAMBIO V6: B ya no crea ningun proceso */
+ 
+     close(fd[0]);
+     close(fd[1]);
+@@ -153,7 +155,6 @@
+         fflush(stdout);
+     }
+ 
+-    waitpid(pid_clon, NULL, 0);
+     exit(0);
+ }
+ 
+@@ -173,6 +174,14 @@
+     if (pid_b == 0)
+         proceso_b();
+ 
++    /* CAMBIO V6: segundo fork DESDE A. A cierra fd[0] DESPUES de este
++     * fork: si lo cerrara antes, C naceria sin el extremo de lectura. */
++    pid_c = fork();
++    if (pid_c < 0)
++        die("fork C");
++    if (pid_c == 0)
++        hijo_c();
++
+     close(fd[0]);
+     signal(SIGPIPE, SIG_IGN);
+ 

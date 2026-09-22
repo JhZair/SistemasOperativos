@@ -1,0 +1,162 @@
+--- base/proceso_a.c
++++ v2_canales_intercambiados/proceso_a.c
+@@ -42,13 +42,13 @@
+ static void manejador_int(int signo)
+ {
+     ultima_senal = signo;
+-    siglongjmp(punto_salto, SALTO_COLA);
++    siglongjmp(punto_salto, SALTO_PIPE);    /* CAMBIO V2: senal 2 -> pipe (a B) */
+ }
+ 
+ static void manejador_trap(int signo)
+ {
+     ultima_senal = signo;
+-    siglongjmp(punto_salto, SALTO_PIPE);
++    siglongjmp(punto_salto, SALTO_COLA);    /* CAMBIO V2: senal 5 -> cola (a C) */
+ }
+ 
+ static void manejador_term(int signo)
+@@ -105,12 +105,17 @@
+ 
+ static void clon_de_b(void)
+ {
+-    char texto_fd[16];
++    char texto_clave[16];
+ 
++    /* CAMBIO V2: C ya no usa el pipe: cierra AMBOS extremos */
++    close(fd[0]);
+     close(fd[1]);
+-    snprintf(texto_fd, sizeof(texto_fd), "%d", fd[0]);
+ 
+-    char *args[] = { "./proceso_c", texto_fd, NULL };
++    /* CAMBIO V2: C usara la cola, pero tras execv pierde la variable
++     * msqid. Se le pasa la CLAVE por argv y el hace su propio msgget. */
++    snprintf(texto_clave, sizeof(texto_clave), "%d", CLAVE_COLA);
++
++    char *args[] = { "./proceso_c", texto_clave, NULL };
+ 
+     fflush(stdout);
+     execv("./proceso_c", args);
+@@ -120,7 +125,7 @@
+ static void proceso_b(void)
+ {
+     pid_t pid_clon;
+-    struct mensaje m;
++    char buf[MAXTEXT];      /* CAMBIO V2: B lee bytes del pipe */
+     ssize_t n;
+ 
+     signal(SIGINT,  SIG_IGN);
+@@ -132,26 +137,28 @@
+     if (pid_clon == 0)
+         clon_de_b();
+ 
+-    close(fd[0]);
++    /* CAMBIO V2: B ahora LEE del pipe: conserva fd[0], cierra fd[1] */
+     close(fd[1]);
+ 
+-    printf("[B %d] esperando en la cola\n", (int) getpid());
++    printf("[B %d] esperando en el PIPE (fd %d)\n", (int) getpid(), fd[0]);
+     fflush(stdout);
+ 
+     while (1)
+     {
+-        n = msgrcv(msqid, &m, MAXTEXT, TIPO_MSG, 0);
++        n = read(fd[0], buf, MAXTEXT - 1);
+         if (n < 0)
+         {
+             if (errno == EINTR)
+                 continue;
+-            if (errno == EIDRM || errno == EINVAL)
+-                break;
+-            die("msgrcv");
++            die("read");
+         }
+-        printf("[B %d] recibido por COLA: \"%s\"\n", (int) getpid(), m.mtext);
++        if (n == 0)
++            break;                          /* EOF: A cerro el pipe */
++        buf[n] = '\0';
++        printf("[B %d] recibido por PIPE: \"%s\"\n", (int) getpid(), buf);
+         fflush(stdout);
+     }
++    close(fd[0]);
+ 
+     waitpid(pid_clon, NULL, 0);
+     exit(0);
+--- base/proceso_c.c
++++ v2_canales_intercambiados/proceso_c.c
+@@ -3,44 +3,60 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <sys/types.h>
++#include <sys/ipc.h>
++#include <sys/msg.h>
+ 
+-#define MAXBUF 256
++/* CAMBIO V2: C recibe por la COLA. Tiene que declarar la MISMA
++ * estructura y usar el MISMO tipo que A. */
++#define TIPO_MSG 1
++#define MAXTEXT  256
++
++struct mensaje
++{
++    long mtype;
++    char mtext[MAXTEXT];
++};
+ 
+ int main(int argc, char *argv[])
+ {
+-    int fd;
+-    char buf[MAXBUF];
++    int msqid;
++    struct mensaje m;
+     ssize_t n;
+ 
+     if (argc != 2)
+     {
+-        fprintf(stderr, "uso: %s <fd>\n", argv[0]);
++        fprintf(stderr, "uso: %s <clave_cola>\n", argv[0]);
+         return 1;
+     }
+ 
+-    fd = atoi(argv[1]);
+-    printf("[C %d] escuchando el PIPE por el fd %d\n", (int) getpid(), fd);
++    /* CAMBIO V2: argv[1] es la CLAVE. Sin IPC_CREAT: la cola ya existe
++     * (la creo A), solo la localizamos. */
++    if ((msqid = msgget((key_t) atoi(argv[1]), 0666)) < 0)
++    {
++        perror("msgget");
++        return 1;
++    }
++    printf("[C %d] escuchando la COLA %d (clave %s)\n",
++           (int) getpid(), msqid, argv[1]);
+     fflush(stdout);
+ 
+     while (1)
+     {
+-        n = read(fd, buf, MAXBUF - 1);
++        n = msgrcv(msqid, &m, MAXTEXT, TIPO_MSG, 0);
+         if (n < 0)
+         {
+             if (errno == EINTR)
+                 continue;
+-            perror("read");
++            if (errno == EIDRM || errno == EINVAL)
++                break;                      /* A borro la cola */
++            perror("msgrcv");
+             return 1;
+         }
+-        if (n == 0)
+-            break;
+-        buf[n] = '\0';
+-        printf("[C %d] recibido por PIPE (fd %d): \"%s\"\n",
+-               (int) getpid(), fd, buf);
++        printf("[C %d] recibido por COLA (tipo %ld): \"%s\"\n",
++               (int) getpid(), m.mtype, m.mtext);
+         fflush(stdout);
+     }
+ 
+-    printf("[C %d] EOF, salgo\n", (int) getpid());
+-    close(fd);
++    printf("[C %d] cola eliminada, salgo\n", (int) getpid());
+     return 0;
+ }

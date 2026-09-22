@@ -1,0 +1,33 @@
+--- base/proceso_a.c
++++ v8_rele_b_reenvia_a_c/proceso_a.c
+@@ -132,8 +132,9 @@
+     if (pid_clon == 0)
+         clon_de_b();
+ 
++    /* CAMBIO V8: B ahora ESCRIBE en el pipe (reenvia a C): conserva
++     * fd[1]. El pipe tiene DOS escritores: A y B. */
+     close(fd[0]);
+-    close(fd[1]);
+ 
+     printf("[B %d] esperando en la cola\n", (int) getpid());
+     fflush(stdout);
+@@ -151,8 +152,19 @@
+         }
+         printf("[B %d] recibido por COLA: \"%s\"\n", (int) getpid(), m.mtext);
+         fflush(stdout);
++
++        /* CAMBIO V8: reenviar a C por el pipe, marcando que paso por B.
++         * Escrituras <= PIPE_BUF (4096) son atomicas: los mensajes de A
++         * y de B no se mezclan a mitad. */
++        {
++            char buf[MAXTEXT + 32];
++            snprintf(buf, sizeof(buf), "via B %d: %s", (int) getpid(), m.mtext);
++            if (write(fd[1], buf, strlen(buf)) < 0)
++                perror("write B");
++        }
+     }
+ 
++    close(fd[1]);           /* CAMBIO V8: sin esto C nunca veria EOF */
+     waitpid(pid_clon, NULL, 0);
+     exit(0);
+ }

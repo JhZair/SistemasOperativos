@@ -1,0 +1,134 @@
+--- base/proceso_a.c
++++ v7_c_notifica_a_con_senal/proceso_a.c
+@@ -17,6 +17,7 @@
+ #define SALTO_COLA 1
+ #define SALTO_PIPE 2
+ #define SALTO_FIN  3
++#define SALTO_ACK  4            /* CAMBIO V7 */
+ 
+ struct mensaje
+ {
+@@ -30,6 +31,7 @@
+ static int   fd[2];
+ static int   msqid = -1;
+ static pid_t pid_b = -1;
++static pid_t pid_a = -1;           /* CAMBIO V7 */
+ static int   contador_cola = 0;
+ static int   contador_pipe = 0;
+ 
+@@ -57,6 +59,13 @@
+     siglongjmp(punto_salto, SALTO_FIN);
+ }
+ 
++/* CAMBIO V7: A recibe la confirmacion de C */
++static void manejador_usr1(int signo)
++{
++    ultima_senal = signo;
++    siglongjmp(punto_salto, SALTO_ACK);
++}
++
+ static void enviar_por_cola(void)
+ {
+     struct mensaje m;
+@@ -85,13 +94,16 @@
+     snprintf(buf, MAXTEXT, "mensaje %d de A por senal %d",
+              contador_pipe, (int) ultima_senal);
+ 
++    /* CAMBIO V7: imprimir ANTES de escribir. C respondera con SIGUSR1
++     * apenas lea, y ese salto podria cortar un printf a medias. */
++    printf("[A %d] enviando por PIPE: \"%s\"\n", (int) getpid(), buf);
++    fflush(stdout);
++
+     if (write(fd[1], buf, strlen(buf)) < 0)
+     {
+         perror("write");
+         return;
+     }
+-    printf("[A %d] enviado por PIPE: \"%s\"\n", (int) getpid(), buf);
+-    fflush(stdout);
+ }
+ 
+ static void terminar(void)
+@@ -106,11 +118,15 @@
+ static void clon_de_b(void)
+ {
+     char texto_fd[16];
++    char texto_pid[16];     /* CAMBIO V7 */
+ 
+     close(fd[1]);
+     snprintf(texto_fd, sizeof(texto_fd), "%d", fd[0]);
+ 
+-    char *args[] = { "./proceso_c", texto_fd, NULL };
++    /* CAMBIO V7: C necesita el PID de A. getppid() en C daria el de B. */
++    snprintf(texto_pid, sizeof(texto_pid), "%d", (int) pid_a);
++
++    char *args[] = { "./proceso_c", texto_fd, texto_pid, NULL };
+ 
+     fflush(stdout);
+     execv("./proceso_c", args);
+@@ -161,6 +177,8 @@
+ {
+     int origen;
+ 
++    pid_a = getpid();       /* CAMBIO V7: antes del fork, lo heredan todos */
++
+     if (pipe(fd) < 0)
+         die("pipe");
+     if ((msqid = msgget(CLAVE_COLA, IPC_CREAT | 0666)) < 0)
+@@ -184,10 +202,16 @@
+         enviar_por_pipe();
+     else if (origen == SALTO_FIN)
+         terminar();
++    else if (origen == SALTO_ACK)
++    {
++        printf("[A %d] C confirmo la recepcion (SIGUSR1)\n", (int) getpid());
++        fflush(stdout);
++    }
+ 
+     signal(SIGINT,  manejador_int);
+     signal(SIGTRAP, manejador_trap);
+     signal(SIGTERM, manejador_term);
++    signal(SIGUSR1, manejador_usr1);    /* CAMBIO V7 */
+ 
+     if (origen == 0)
+     {
+--- base/proceso_c.c
++++ v7_c_notifica_a_con_senal/proceso_c.c
+@@ -2,6 +2,7 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <errno.h>
++#include <signal.h>       /* CAMBIO V7: kill */
+ #include <sys/types.h>
+ 
+ #define MAXBUF 256
+@@ -11,14 +12,16 @@
+     int fd;
+     char buf[MAXBUF];
+     ssize_t n;
++    pid_t pid_a;            /* CAMBIO V7 */
+ 
+-    if (argc != 2)
++    if (argc != 3)          /* CAMBIO V7: ahora son 2 argumentos */
+     {
+-        fprintf(stderr, "uso: %s <fd>\n", argv[0]);
++        fprintf(stderr, "uso: %s <fd> <pid_A>\n", argv[0]);
+         return 1;
+     }
+ 
+     fd = atoi(argv[1]);
++    pid_a = (pid_t) atoi(argv[2]);     /* CAMBIO V7 */
+     printf("[C %d] escuchando el PIPE por el fd %d\n", (int) getpid(), fd);
+     fflush(stdout);
+ 
+@@ -38,6 +41,10 @@
+         printf("[C %d] recibido por PIPE (fd %d): \"%s\"\n",
+                (int) getpid(), fd, buf);
+         fflush(stdout);
++
++        /* CAMBIO V7: notificar a A que el mensaje llego */
++        if (kill(pid_a, SIGUSR1) < 0)
++            perror("kill");
+     }
+ 
+     printf("[C %d] EOF, salgo\n", (int) getpid());

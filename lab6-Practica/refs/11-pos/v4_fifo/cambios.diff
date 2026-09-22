@@ -1,0 +1,145 @@
+--- base/proceso_a.c
++++ v4_fifo/proceso_a.c
+@@ -9,10 +9,13 @@
+ #include <sys/wait.h>
+ #include <sys/ipc.h>
+ #include <sys/msg.h>
++#include <sys/stat.h>     /* CAMBIO V4: mkfifo */
++#include <fcntl.h>        /* CAMBIO V4: open */
+ 
+ #define CLAVE_COLA 2026
+ #define TIPO_MSG   1
+ #define MAXTEXT    256
++#define FIFO_PATH  "/tmp/fifoControl"   /* CAMBIO V4 */
+ 
+ #define SALTO_COLA 1
+ #define SALTO_PIPE 2
+@@ -27,7 +30,7 @@
+ static sigjmp_buf punto_salto;
+ static volatile sig_atomic_t ultima_senal = 0;
+ 
+-static int   fd[2];
++static int   fd_fifo = -1;          /* CAMBIO V4: un solo descriptor */
+ static int   msqid = -1;
+ static pid_t pid_b = -1;
+ static int   contador_cola = 0;
+@@ -85,18 +88,19 @@
+     snprintf(buf, MAXTEXT, "mensaje %d de A por senal %d",
+              contador_pipe, (int) ultima_senal);
+ 
+-    if (write(fd[1], buf, strlen(buf)) < 0)
++    if (write(fd_fifo, buf, strlen(buf)) < 0)
+     {
+         perror("write");
+         return;
+     }
+-    printf("[A %d] enviado por PIPE: \"%s\"\n", (int) getpid(), buf);
++    printf("[A %d] enviado por FIFO: \"%s\"\n", (int) getpid(), buf);
+     fflush(stdout);
+ }
+ 
+ static void terminar(void)
+ {
+-    close(fd[1]);
++    close(fd_fifo);
++    unlink(FIFO_PATH);      /* CAMBIO V4: el FIFO no desaparece solo */
+     msgctl(msqid, IPC_RMID, NULL);
+     waitpid(pid_b, NULL, 0);
+     printf("[A %d] fin\n", (int) getpid());
+@@ -105,12 +109,9 @@
+ 
+ static void clon_de_b(void)
+ {
+-    char texto_fd[16];
+-
+-    close(fd[1]);
+-    snprintf(texto_fd, sizeof(texto_fd), "%d", fd[0]);
+-
+-    char *args[] = { "./proceso_c", texto_fd, NULL };
++    /* CAMBIO V4: nada que heredar ni cerrar. Se pasa la RUTA del FIFO:
++     * C lo abrira por su nombre, como un archivo. */
++    char *args[] = { "./proceso_c", FIFO_PATH, NULL };
+ 
+     fflush(stdout);
+     execv("./proceso_c", args);
+@@ -132,8 +133,7 @@
+     if (pid_clon == 0)
+         clon_de_b();
+ 
+-    close(fd[0]);
+-    close(fd[1]);
++    /* CAMBIO V4: B no hereda descriptores del FIFO: nada que cerrar */
+ 
+     printf("[B %d] esperando en la cola\n", (int) getpid());
+     fflush(stdout);
+@@ -161,8 +161,10 @@
+ {
+     int origen;
+ 
+-    if (pipe(fd) < 0)
+-        die("pipe");
++    /* CAMBIO V4: FIFO con nombre en vez de pipe anonimo.
++     * EEXIST no es error: el FIFO ya existia de otra ejecucion. */
++    if (mkfifo(FIFO_PATH, 0666) < 0 && errno != EEXIST)
++        die("mkfifo");
+     if ((msqid = msgget(CLAVE_COLA, IPC_CREAT | 0666)) < 0)
+         die("msgget");
+     fflush(stdout);
+@@ -173,9 +175,15 @@
+     if (pid_b == 0)
+         proceso_b();
+ 
+-    close(fd[0]);
+     signal(SIGPIPE, SIG_IGN);
+ 
++    /* CAMBIO V4: abrir para escribir. open BLOQUEA hasta que C abra
++     * para leer: es la "cita" del FIFO. Por eso va DESPUES del fork. */
++    printf("[A %d] esperando a que C abra el FIFO...\n", (int) getpid());
++    fflush(stdout);
++    if ((fd_fifo = open(FIFO_PATH, O_WRONLY)) < 0)
++        die("open fifo");
++
+     origen = sigsetjmp(punto_salto, 1);
+ 
+     if (origen == SALTO_COLA)
+--- base/proceso_c.c
++++ v4_fifo/proceso_c.c
+@@ -2,6 +2,7 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <errno.h>
++#include <fcntl.h>        /* CAMBIO V4: open */
+ #include <sys/types.h>
+ 
+ #define MAXBUF 256
+@@ -14,12 +15,18 @@
+ 
+     if (argc != 2)
+     {
+-        fprintf(stderr, "uso: %s <fd>\n", argv[0]);
++        fprintf(stderr, "uso: %s <ruta_fifo>\n", argv[0]);
+         return 1;
+     }
+ 
+-    fd = atoi(argv[1]);
+-    printf("[C %d] escuchando el PIPE por el fd %d\n", (int) getpid(), fd);
++    /* CAMBIO V4: argv[1] es la RUTA del FIFO, no un descriptor */
++    if ((fd = open(argv[1], O_RDONLY)) < 0)
++    {
++        perror("open fifo");
++        return 1;
++    }
++    printf("[C %d] escuchando el FIFO %s (fd %d)\n",
++           (int) getpid(), argv[1], fd);
+     fflush(stdout);
+ 
+     while (1)
+@@ -35,7 +42,7 @@
+         if (n == 0)
+             break;
+         buf[n] = '\0';
+-        printf("[C %d] recibido por PIPE (fd %d): \"%s\"\n",
++        printf("[C %d] recibido por FIFO (fd %d): \"%s\"\n",
+                (int) getpid(), fd, buf);
+         fflush(stdout);
+     }
